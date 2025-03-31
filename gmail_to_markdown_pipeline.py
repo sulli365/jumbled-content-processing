@@ -4,20 +4,25 @@ import os
 import base64
 import email
 import re
+import json
+import logging
 from datetime import datetime
 import requests
-from bs4 import BeautifulSoup
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
 # --- CONFIGURATION ---
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
-GMAIL_QUERY = 'from:me label:to-process is:unread'
-OUTPUT_DIR = "output_md_files"
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+GMAIL_QUERY = 'from:sfsulliv@gmail.com label:to-process is:unread'
+TRACK_FILE = "processed_links.json"
+LOG_FILE = "pipeline.log"
+SUPABASE_URL = os.getenv("SUPABASE_URL")  # e.g. https://yourproject.supabase.co/rest/v1/email_entries
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+# --- LOGGING SETUP ---
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s')
 
 # --- AUTH GMAIL ---
 def authenticate_gmail():
@@ -57,69 +62,113 @@ def parse_email(service, msg_id):
                 break
     return subject, date, body
 
+# --- EXTRACT CATEGORY FROM SUBJECT ---
+CATEGORIES = ["coding data science", "crypto", "carbon"]
+
+def extract_category(subject):
+    subject_lower = subject.lower()
+    for cat in CATEGORIES:
+        if subject_lower.startswith(cat):
+            return cat
+    return "other"
+
 # --- EXTRACT LINKS ---
 def extract_links(text):
     return re.findall(r'(https?://\S+)', text)
 
-# --- FETCH PAGE TEXT ---
-def fetch_page_text(url):
-    try:
-        res = requests.get(url, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        return soup.get_text(separator=' ', strip=True)[:4000]  # truncate to fit token limit
-    except Exception as e:
-        return f"[Error fetching {url}]: {e}"
+# --- LOAD TRACK FILE ---
+def load_processed_links():
+    if os.path.exists(TRACK_FILE):
+        with open(TRACK_FILE, 'r') as f:
+            return json.load(f)
+    return {}
 
-# --- SUMMARIZE TEXT USING OPENROUTER ---
-def summarize_text(text):
-    try:
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": "google/gemini-2.0-flash-001",  # or another OpenRouter-supported model
-            "messages": [
-                {"role": "system", "content": "Summarize the following webpage or email content."},
-                {"role": "user", "content": text}
-            ],
-            "max_tokens": 300
-        }
-        response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
-        return data["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        return f"[Error summarizing content]: {e}"
+# --- SAVE TRACK FILE ---
+def save_processed_links(data):
+    with open(TRACK_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
 
 # --- SAVE AS MARKDOWN ---
-def save_markdown(subject, date, links, summaries):
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
+def save_markdown(subject, date, category, links):
     safe_title = re.sub(r'[^a-zA-Z0-9]+', '-', subject.lower())[:50]
     filename = f"{date[:10]}_{safe_title}.md"
-    path = os.path.join(OUTPUT_DIR, filename)
-    with open(path, 'w') as f:
-        f.write(f"# {subject}\n\n")
-        f.write(f"**Date:** {date}\n\n")
-        for url, summary in zip(links, summaries):
-            f.write(f"## {url}\n\n")
-            f.write(f"{summary}\n\n")
-    return path
+    markdown_content = f"# {subject}\n\n**Date:** {date}\n\n**Category:** {category}\n\n"
+    for url in links:
+        markdown_content += f"- {url}\n"
+    with open(filename, 'w') as f:
+        f.write(markdown_content)
+    return filename, markdown_content
+
+# --- UPLOAD TO SUPABASE ---
+def upload_to_supabase(subject, category, date, markdown, links):
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "subject": subject,
+        "category": category,
+        "timestamp": date,
+        "markdown": markdown,
+        "links": links
+    }
+    try:
+        response = requests.post(SUPABASE_URL, headers=headers, json=[payload])
+        if response.status_code == 201:
+            logging.info(f"Uploaded to Supabase: {subject}")
+        else:
+            logging.error(f"Failed Supabase upload: {response.status_code} - {response.text}")
+    except Exception as e:
+        logging.error(f"Exception during Supabase upload: {e}")
+
+# --- MODIFY LABELS ---
+def modify_labels(service, msg_id, remove_labels, add_labels):
+    body = {
+        "removeLabelIds": remove_labels,
+        "addLabelIds": add_labels
+    }
+    service.users().messages().modify(userId='me', id=msg_id, body=body).execute()
+
+# --- GET LABEL IDS ---
+def get_label_ids(service):
+    labels = service.users().labels().list(userId='me').execute().get('labels', [])
+    return {label['name'].lower(): label['id'] for label in labels}
 
 # --- MAIN LOGIC ---
 def main():
     service = authenticate_gmail()
+    label_ids = get_label_ids(service)
     messages = fetch_emails(service)
+    processed_links = load_processed_links()
+
     for msg in messages:
         subject, date, body = parse_email(service, msg['id'])
+        category = extract_category(subject)
+        key = f"{date[:10]}_{subject}"
+
         links = extract_links(body)
-        summaries = []
-        for url in links:
-            text = fetch_page_text(url)
-            summary = summarize_text(text)
-            summaries.append(summary)
-        save_markdown(subject, date, links, summaries)
+        if key not in processed_links:
+            processed_links[key] = []
+
+        new_links = [url for url in links if url not in processed_links[key]]
+        if not new_links:
+            logging.info(f"No new links for '{subject}' on {date[:10]}")
+            continue
+
+        processed_links[key].extend(new_links)
+
+        filename, markdown = save_markdown(subject, date, category, new_links)
+        logging.info(f"Saved markdown file: {filename}")
+
+        upload_to_supabase(subject, category, date, markdown, new_links)
+
+        remove = [label_ids.get('to-process')]
+        add = [label_ids.get(category.lower(), label_ids.get('other'))]
+        modify_labels(service, msg['id'], remove, add)
+        logging.info(f"Updated labels for message: {subject} → {category}")
+
+    save_processed_links(processed_links)
 
 if __name__ == '__main__':
     main()

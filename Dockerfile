@@ -1,21 +1,19 @@
-# Use an official Python image
+# Use official Python base image
 FROM python:3.11-slim
 
-# Set working directory
+# Set working directory in the container
 WORKDIR /app
 
-# Copy requirements file and install dependencies
+# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of your app code
+# Copy the rest of your app
 COPY . .
 
-# Set environment variables (can be overridden in Railway)
-ENV OUTPUT_DIR=output_md_files
+# Set environment variables (optional fallback defaults)
+ENV TRACK_FILE=processed_links.json
+ENV LOG_FILE=pipeline.log
 
-# Create output directory
-RUN mkdir -p ${OUTPUT_DIR}
-
-# Run the app
+# Run your app
 CMD ["python", "gmail_to_markdown_pipeline.py"]

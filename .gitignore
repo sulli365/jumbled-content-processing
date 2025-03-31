@@ -1,2 +1,22 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+
+# Token and credentials
+token.json
+credentials.json
+
+# Env variables
 .env
 .env.example
+
+# Logs and output files
+*.log
+*.md
+*.txt
+*.json
+
+# OS / editor files
+.DS_Store
+.vscode/
+.idea/
