@@ -21,3 +21,7 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+
+# Test and catchup scripts
+gmail_to_markdown_local.py
+upload_existing_markdown.py
