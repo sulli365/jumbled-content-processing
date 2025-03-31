@@ -9,6 +9,7 @@ credentials.json
 # Env variables
 .env
 .env.example
+venv/
 
 # Logs and output files
 *.log
