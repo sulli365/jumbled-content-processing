@@ -5,6 +5,8 @@ __pycache__/
 # Token and credentials
 token.json
 credentials.json
+token.json.b64
+credentials.json.b64
 
 # Env variables
 .env

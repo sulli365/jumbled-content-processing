@@ -24,6 +24,16 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 # --- LOGGING SETUP ---
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s')
 
+# --- HELPER FUNCTION TO WRITE FILES FROM ENV VARIABLES ---
+def write_file_from_env(var_name, filename):
+    encoded = os.getenv(var_name)
+    if encoded:
+        with open(filename, 'wb') as f:
+            f.write(base64.b64decode(encoded))
+    else:
+        logging.error(f"Environment variable {var_name} is not set.")
+        raise Exception(f"Environment variable {var_name} is not set.")
+
 # --- AUTH GMAIL ---
 def authenticate_gmail():
     creds = None
@@ -153,6 +163,13 @@ def get_label_ids(service):
 
 # --- MAIN LOGIC ---
 def main():
+    # Decode credentials and token files if running from Railway
+    # These environment variables should be set in Railway as base64 encoded strings
+    if os.getenv('CREDENTIALS_JSON_B64'):
+        write_file_from_env('CREDENTIALS_JSON_B64', 'credentials.json')
+    if os.getenv('TOKEN_JSON_B64'):
+        write_file_from_env('TOKEN_JSON_B64', 'token.json')
+        
     service = authenticate_gmail()
     label_ids = get_label_ids(service)
     messages = fetch_emails(service)
