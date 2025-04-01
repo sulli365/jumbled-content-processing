@@ -25,3 +25,4 @@ venv/
 # Test and catchup scripts
 gmail_to_markdown_local.py
 upload_existing_markdown.py
+gmail_to_markdown_catchup.py
