@@ -1,4 +1,4 @@
-# gmail_to_markdown_pipeline.py
+# gmail_to_markdown_catchup.py
 
 import os
 import base64
@@ -8,17 +8,20 @@ import json
 import logging
 from datetime import datetime
 import requests
+from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
+# --- ENV SETUP ---
+load_dotenv()
+
 # --- CONFIGURATION ---
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
-GMAIL_QUERY = 'from:sfsulliv@gmail.com label:to-process is:unread'
-TRACK_FILE = "processed_links.json"
+GMAIL_QUERY = 'from:sfsulliv@gmail.com'
 LOG_FILE = "pipeline.log"
-SUPABASE_URL = os.getenv("SUPABASE_URL")  # e.g. https://yourproject.supabase.co/rest/v1/email_entries
+SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 # --- LOGGING SETUP ---
@@ -52,11 +55,11 @@ def fetch_emails(service):
         ).execute()
 
         messages.extend(response.get('messages', []))
-
         next_page_token = response.get('nextPageToken')
         if not next_page_token:
             break
 
+    logging.info(f"Total emails fetched: {len(messages)}")
     return messages
 
 # --- PARSE EMAIL ---
@@ -72,11 +75,11 @@ def parse_email(service, msg_id):
         if part.get('mimeType') == 'text/plain':
             data = part['body'].get('data')
             if data:
-                body = base64.urlsafe_b64decode(data).decode('utf-8')
+                body = base64.urlsafe_b64decode(data).decode('utf-8', errors='replace')
                 break
     return subject, date, body
 
-# --- EXTRACT CATEGORY FROM SUBJECT ---
+# --- CATEGORY EXTRACTION ---
 CATEGORIES = ["coding data science", "crypto", "carbon"]
 
 def extract_category(subject):
@@ -90,18 +93,6 @@ def extract_category(subject):
 def extract_links(text):
     return re.findall(r'(https?://\S+)', text)
 
-# --- LOAD TRACK FILE ---
-def load_processed_links():
-    if os.path.exists(TRACK_FILE):
-        with open(TRACK_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-# --- SAVE TRACK FILE ---
-def save_processed_links(data):
-    with open(TRACK_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
-
 # --- SAVE AS MARKDOWN ---
 def save_markdown(subject, date, category, links):
     safe_title = re.sub(r'[^a-zA-Z0-9]+', '-', subject.lower())[:50]
@@ -109,9 +100,23 @@ def save_markdown(subject, date, category, links):
     markdown_content = f"# {subject}\n\n**Date:** {date}\n\n**Category:** {category}\n\n"
     for url in links:
         markdown_content += f"- {url}\n"
-    with open(filename, 'w') as f:
+    with open(filename, 'w', encoding='utf-8') as f:
         f.write(markdown_content)
     return filename, markdown_content
+
+# --- CHECK FOR DUPLICATE IN SUPABASE ---
+def already_in_supabase(date):
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}"
+    }
+    params = {
+        "timestamp": f"eq.{date}"
+    }
+    response = requests.get(SUPABASE_URL, headers=headers, params=params)
+    if response.status_code == 200:
+        return len(response.json()) > 0
+    return False
 
 # --- UPLOAD TO SUPABASE ---
 def upload_to_supabase(subject, category, date, markdown, links):
@@ -130,61 +135,35 @@ def upload_to_supabase(subject, category, date, markdown, links):
     try:
         response = requests.post(SUPABASE_URL, headers=headers, json=[payload])
         if response.status_code == 201:
-            logging.info(f"Uploaded to Supabase: {subject}")
+            logging.info(f"✅ Uploaded: {subject}")
         elif response.status_code == 409:
-            logging.info(f"Skipped duplicate: {subject} ({date})")
+            logging.info(f"⚠️ Skipped duplicate (409): {subject}")
         else:
-            logging.error(f"Failed Supabase upload: {response.status_code} - {response.text}")
+            logging.error(f"❌ Upload failed: {response.status_code} - {response.text}")
     except Exception as e:
-        logging.error(f"Exception during Supabase upload: {e}")
+        logging.error(f"❌ Exception uploading to Supabase: {e}")
 
-# --- MODIFY LABELS ---
-def modify_labels(service, msg_id, remove_labels, add_labels):
-    body = {
-        "removeLabelIds": remove_labels,
-        "addLabelIds": add_labels
-    }
-    service.users().messages().modify(userId='me', id=msg_id, body=body).execute()
-
-# --- GET LABEL IDS ---
-def get_label_ids(service):
-    labels = service.users().labels().list(userId='me').execute().get('labels', [])
-    return {label['name'].lower(): label['id'] for label in labels}
-
-# --- MAIN LOGIC ---
+# --- MAIN ---
 def main():
     service = authenticate_gmail()
-    label_ids = get_label_ids(service)
     messages = fetch_emails(service)
-    processed_links = load_processed_links()
 
     for msg in messages:
         subject, date, body = parse_email(service, msg['id'])
         category = extract_category(subject)
-        key = f"{date[:10]}_{subject}"
-
         links = extract_links(body)
-        if key not in processed_links:
-            processed_links[key] = []
 
-        new_links = [url for url in links if url not in processed_links[key]]
-        if not new_links:
-            logging.info(f"No new links for '{subject}' on {date[:10]}")
+        if not links:
+            logging.info(f"Skipped (no links): {subject}")
             continue
 
-        processed_links[key].extend(new_links)
+        if already_in_supabase(date):
+            logging.info(f"Skipped (already in Supabase): {subject} ({date})")
+            continue
 
-        filename, markdown = save_markdown(subject, date, category, new_links)
+        filename, markdown = save_markdown(subject, date, category, links)
         logging.info(f"Saved markdown file: {filename}")
-
-        upload_to_supabase(subject, category, date, markdown, new_links)
-
-        remove = [label_ids.get('to-process')]
-        add = [label_ids.get(category.lower(), label_ids.get('other'))]
-        modify_labels(service, msg['id'], remove, add)
-        logging.info(f"Updated labels for message: {subject} → {category}")
-
-    save_processed_links(processed_links)
+        upload_to_supabase(subject, category, date, markdown, links)
 
 if __name__ == '__main__':
     main()
