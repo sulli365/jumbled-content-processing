@@ -30,9 +30,11 @@ def write_file_from_env(var_name, filename):
     if encoded:
         with open(filename, 'wb') as f:
             f.write(base64.b64decode(encoded))
+        logging.info(f"Successfully wrote {filename} from {var_name}.")
     else:
         logging.error(f"Environment variable {var_name} is not set.")
         raise Exception(f"Environment variable {var_name} is not set.")
+
 
 # --- AUTH GMAIL ---
 def authenticate_gmail():
