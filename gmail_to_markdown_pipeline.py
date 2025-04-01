@@ -166,9 +166,9 @@ def main():
     # Decode credentials and token files if running from Railway
     # These environment variables should be set in Railway as base64 encoded strings
     if os.getenv('CREDENTIALS_JSON_B64'):
-        write_file_from_env('CREDENTIALS_JSON_B64', 'credentials.json')
+        write_file_from_env('CREDENTIALS_JSON_B64', '/app/credentials.json')
     if os.getenv('TOKEN_JSON_B64'):
-        write_file_from_env('TOKEN_JSON_B64', 'token.json')
+        write_file_from_env('TOKEN_JSON_B64', '/app/token.json')
         
     service = authenticate_gmail()
     label_ids = get_label_ids(service)
