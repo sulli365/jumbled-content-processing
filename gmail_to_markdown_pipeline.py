@@ -38,18 +38,30 @@ def write_file_from_env(var_name, filename):
 
 # --- AUTH GMAIL ---
 def authenticate_gmail():
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+    try:
+        creds = None
+        if os.path.exists('token.json'):
+            creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                logging.info("Refreshed expired Gmail token.")
+            else:
+                logging.error("No valid token available and no refresh token. Re-authentication required.")
+                raise Exception("Gmail credentials invalid and re-auth not possible in headless mode.")
+
+            with open('token.json', 'w') as token:
+                token.write(creds.to_json())
+                logging.info("Updated token.json after refresh.")
         else:
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-    return build('gmail', 'v1', credentials=creds)
+            logging.info("Loaded valid Gmail credentials from token.json.")
+        return build('gmail', 'v1', credentials=creds)
+
+    except Exception as e:
+        logging.error(f"Gmail authentication failed: {str(e)}")
+        raise
+
 
 # --- FETCH EMAILS ---
 def fetch_emails(service):
