@@ -20,6 +20,9 @@ TRACK_FILE = "processed_links.json"
 LOG_FILE = "pipeline.log"
 SUPABASE_URL = os.getenv("SUPABASE_URL")  # e.g. https://yourproject.supabase.co/rest/v1/email_entries
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+TOKEN_PATH = "/data/token.json"  # this will persist across runs
+CREDENTIALS_PATH = "/app/credentials.json"  # this can stay in /app or /data
+
 
 # --- LOGGING SETUP ---
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s')
@@ -40,8 +43,8 @@ def write_file_from_env(var_name, filename):
 def authenticate_gmail():
     try:
         creds = None
-        if os.path.exists('token.json'):
-            creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+        if os.path.exists(TOKEN_PATH):
+            creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
@@ -51,7 +54,7 @@ def authenticate_gmail():
                 logging.error("No valid token available and no refresh token. Re-authentication required.")
                 raise Exception("Gmail credentials invalid and re-auth not possible in headless mode.")
 
-            with open('token.json', 'w') as token:
+            with open(TOKEN_PATH, 'w') as token:
                 token.write(creds.to_json())
                 logging.info("Updated token.json after refresh.")
         else:
@@ -180,9 +183,10 @@ def main():
     # Decode credentials and token files if running from Railway
     # These environment variables should be set in Railway as base64 encoded strings
     if os.getenv('CREDENTIALS_JSON_B64'):
-        write_file_from_env('CREDENTIALS_JSON_B64', '/app/credentials.json')
-    if os.getenv('TOKEN_JSON_B64'):
-        write_file_from_env('TOKEN_JSON_B64', '/app/token.json')
+        write_file_from_env('CREDENTIALS_JSON_B64', CREDENTIALS_PATH)
+    if os.getenv('TOKEN_JSON_B64') and not os.path.exists(TOKEN_PATH):
+        write_file_from_env('TOKEN_JSON_B64', TOKEN_PATH)
+
         
     service = authenticate_gmail()
     label_ids = get_label_ids(service)
